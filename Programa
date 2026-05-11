@@ -1,0 +1,140 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 32
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// LM35 - Único sensor de la incubadora
+int tempInc1 = A0; 
+
+// DS18B20 - Sensor del bebé (Control principal)
+#define ONE_WIRE_BUS A2
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+// ECG
+int pulsePin = A3;
+
+// Actuadores
+int fanPin = 6;
+int heaterPin = 3;
+unsigned long startTime;
+bool boostActivo = true;
+
+// BPM
+unsigned long lastBeat = 0;
+int bpm = 0;
+int threshold = 520;
+
+void setup() {
+  Serial.begin(9600);
+
+  // OLED (con verificación)
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED ERROR");
+    while(true); 
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // DS18B20
+  sensors.begin();
+
+  // Pines
+  pinMode(fanPin, OUTPUT);
+  pinMode(heaterPin, OUTPUT);
+
+  display.setCursor(0,0);
+  display.print("Iniciando...");
+  display.display();
+  delay(1000);
+  startTime = millis();
+}
+
+void loop() {
+
+  // 🌡️ LECTURA DE TEMPERATURAS
+  // Solo leemos A0
+  float tInc = analogRead(tempInc1) * (5.0 / 1023.0) * 100.0;
+
+  sensors.requestTemperatures();
+  float tb = sensors.getTempCByIndex(0);
+
+  // 🔥💨 LÓGICA DE CONTROL
+  int fanSpeed = 80;
+  int heaterPower = 0;
+
+  // 🚨 Límite máximo seguro de la incubadora
+  float maxIncTemp = 38.5;
+
+  // ⏱️ BOOST INICIAL (Primeros 60 segundos)
+  if (boostActivo) {
+    if ((millis() - startTime < 180000) && (tInc < maxIncTemp)) {
+      heaterPower = 255;
+      fanSpeed = 0;
+    } else {
+      boostActivo = false;
+    }
+  }
+
+  // 🔁 CONTROL NORMAL
+  if (!boostActivo) {
+    // 1. CONTROL POR TEMPERATURA DEL BEBÉ
+    if (tb < 36.5 && tInc < maxIncTemp) {
+      heaterPower = 200;
+      fanSpeed = 50;
+    }
+    // 2. SEGURIDAD: SI LA INCUBADORA ESTÁ MUY CALIENTE
+    else if (tInc >= maxIncTemp) {
+      heaterPower = 255;
+      fanSpeed = 0; // Ventilador a alta velocidad para enfriar
+    }
+    // 3. BEBÉ EN TEMPERATURA CORRECTA
+    else if (tb >= 37.0) {
+      heaterPower = 0;
+      fanSpeed = 120;
+    }
+  }
+
+  // Aplicar PWM a los actuadores
+  analogWrite(fanPin, fanSpeed);
+  analogWrite(heaterPin, heaterPower);
+
+  // ❤️ ECG y BPM
+  int ecg = analogRead(pulsePin);
+  if (ecg > threshold) {
+    unsigned long now = millis();
+    if (now - lastBeat > 300) {
+      bpm = 60000 / (now - lastBeat);
+      lastBeat = now;
+    }
+  }
+
+  // 📺 ACTUALIZACIÓN OLED
+  display.clearDisplay();
+
+  display.setCursor(0,0);
+  display.print("Inc:");
+  display.print(tInc,1);
+  display.print("C");
+
+  display.setCursor(0,10);
+  display.print("Bebe:");
+  display.print(tb,1);
+  display.print("C");
+
+  display.setCursor(0,20);
+  display.print("BPM:");
+  display.print(bpm);
+
+  display.display();
+
+  delay(100);
+}
